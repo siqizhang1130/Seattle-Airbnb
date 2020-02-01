@@ -1,0 +1,200 @@
+---
+output:
+  html_document:
+    df_print: paged
+---
+
+#### **To: Seattle Airbnb hosts and potential hosts**  
+  
+#### **From: Siqi Zhang**  
+  
+#### **Date: 12/12/2019**   
+  
+#### **RE: Analyzing the Operation Strategies for Seattle Airbnb Hosts and Potential Hosts**  
+
+***
+
+```{r include = FALSE}
+# Set chunk options for the file
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+```{r}
+# Course: 5210 Communicating Data
+# Purpose: Analyzing operation strategies for Seattle Airbnb hosts
+# Date: Dec 12th, 2019
+# Author: Siqi Zhang
+```
+
+```{r warning = FALSE, message = FALSE}
+# Clear environment of variables and functions
+rm(list = ls(all = TRUE)) 
+
+# Clear environmet of packages
+if(is.null(sessionInfo()$otherPkgs) == FALSE)lapply(paste("package:", names(sessionInfo()$otherPkgs), sep=""), detach, character.only = TRUE, unload = TRUE)
+```
+
+```{r warning = FALSE, message = FALSE}
+#install.packages("microplot")
+# Load librarys
+library(tidyverse)
+library(DMwR)
+library(microplot)
+library(scales)
+```
+
+```{r include=FALSE}
+# Load data
+sea_airbnb <-read.csv("listings.csv")
+
+# clean data
+# look at the data
+str(sea_airbnb)
+summary(sea_airbnb)
+
+# change column names
+names(sea_airbnb)[9] <- "neighbourhood"
+names(sea_airbnb)[10] <- "neighbourhood_group"
+
+# delete NAs and unused levels
+sea_airbnb <- sea_airbnb[complete.cases(sea_airbnb), ]
+sea_airbnb <- sea_airbnb[!(sea_airbnb$host_response_rate=="N/A"),]
+sea_airbnb$host_response_time <- droplevels(sea_airbnb$host_response_time)
+sea_airbnb$host_is_superhost <- droplevels(sea_airbnb$host_is_superhost)
+sea_airbnb$host_response_rate <- droplevels(sea_airbnb$host_response_rate)
+
+# extract year only from host_since variable
+sea_airbnb$host_since <- strptime(as.character(sea_airbnb$host_since), "%m/%d/%y")
+sea_airbnb$host_since <- substring(sea_airbnb$host_since, 1, 4)
+sea_airbnb$host_since <- as.numeric(as.character(sea_airbnb$host_since))
+
+# convert factor variables to numerical variables
+sea_airbnb$host_response_rate <- as.numeric(sub("%", "", sea_airbnb$host_response_rate,fixed=TRUE))/100
+sea_airbnb$price <- as.numeric(sub("$", "", sea_airbnb$price,fixed=TRUE))
+
+# clean NA in price variable
+sea_airbnb <- sea_airbnb[complete.cases(sea_airbnb), ]
+```
+
+**Introduction**
+
+Are you an Airbnb host? Do you know how to earn more revenue from your Airbnb home? Do you know what is a better way to operate? If you just start thinking to be an Airbnb host, do you know how to set a reasonale price? Do you know whether your location has enough price competitiveness? In this project, I will tell you the answers. I analyzed the Seattle Airbnb data with the sample of `r dim(sea_airbnb)[1]` observations. And I mainly focused on whether the host is superhost or not, whether the home is instant bookable, number of customer reviews, performance, neighbourhood group (i.e.: location), price, and annual revenue of Airbnb hosts. I found that: 
+
++ Different neighbourhood groups have apparent different home price.
++ Customer prefer a relatively low price Airbnb home.
++ Being superhost has apparent affect on increasing revenue.
++ Instant bookable has apparent affect on increasing revenue. 
+    
+Also, I will give some recommendations based on my whole analysis to help you operate your Airbnb in a better way. In my analysis, I used the centrality of numeric data (median) to avoid bias which created by extreme values. 
+
+```{r include=FALSE}
+med_price_neighbour <- sea_airbnb %>%
+  group_by(neighbourhood_group) %>%
+  summarise(med_price = median(price))
+
+cascade <- med_price_neighbour$med_price[4]
+downtown <- med_price_neighbour$med_price[7]
+queenA <- med_price_neighbour$med_price[13]
+```
+
+
+**Findings**
+
+Firstly, I found that the Airbnb home price of different neighbourhood group is significantly different. According to the line graph below, we can find that the median price is highest in Downtown, Cascade and Queen Anne, which is \$`r downtown`, \$`r cascade`, \$`r queenA` separately. And I also found that the prices of high reveiew numbers Airbnb (the red dots) are all lower than \$ 250. Meanwhile, most of the data point are clustered under the price of \$ 250.
+
+<br>
+<div style="float: left; width: 50%;">
+![](price_neighbour.png){width=500px}
+</div>
+<div style="float: left; width: 50%;">
+![](review_price.png){width=500px}
+</div>
+
+```{r}
+# add weighted review score column
+#sea_airbnb$year_weight <- SoftMax(max(sea_airbnb$host_since)-sea_airbnb$host_since)
+sea_airbnb$year_weight <- SoftMax(sea_airbnb$host_since)
+sea_airbnb$review_weight <- log(sea_airbnb$number_of_reviews)
+sea_airbnb$weighted_score <- sea_airbnb$review_scores_rating*sea_airbnb$year_weight*sea_airbnb$review_weight
+
+# convert numeric weighted review score data to categorical performance
+sea_airbnb$performance[sea_airbnb$weighted_score >= 0 & sea_airbnb$weighted_score <=  20]  = "Bad"
+sea_airbnb$performance[sea_airbnb$weighted_score > 20 & sea_airbnb$weighted_score <=  120]  = "Poor"
+sea_airbnb$performance[sea_airbnb$weighted_score > 120 & sea_airbnb$weighted_score <=  300]  = "Fair"
+sea_airbnb$performance[sea_airbnb$weighted_score > 300 & sea_airbnb$weighted_score <=  400]  = "Good"
+sea_airbnb$performance[sea_airbnb$weighted_score > 400]  = "Excellent"
+sea_airbnb$performance = factor(sea_airbnb$performance, levels=c("Bad", "Poor", "Fair", "Good", "Excellent"))
+
+# change level names for variables
+levels(sea_airbnb$host_is_superhost) <- c("No", "Yes")
+levels(sea_airbnb$instant_bookable) <- c("No", "Yes")
+
+# adjusted columns for analysis use
+sea_airbnb <- select(sea_airbnb, -year_weight, -review_weight)
+
+# mutate annual_revenue column
+# for simplicity, I assume reviews per month will be the days Airbnb booked every month.And I used monthly review numbers*12 to get the yearly booking days.
+sea_airbnb$annual_rev <- sea_airbnb$price*sea_airbnb$reviews_per_month*12
+
+host_perform_rev <- sea_airbnb %>%
+  group_by(host_is_superhost, performance) %>%
+  summarise(med_rev = median(annual_rev))
+
+max_med_sp <- max(host_perform_rev$med_rev)
+
+book_neighbour_rev <- sea_airbnb %>%
+  group_by(instant_bookable, neighbourhood_group) %>%
+  summarise(med_rev = median(annual_rev))
+
+max_med_bk <- max(book_neighbour_rev$med_rev)
+```
+
+
+Now, let's look at the graph of superhost and performance across revenue. Performance here is a ranking based on total review numbers, host years, and review scores, which reflects the overall operation facts. According to the line graph below, we can find that for each performance levels, superhost can earn more revenue than non-superhost. Furthermore, if the superhost has the excellent performance, the revenue will be highest, which is \$`r max_med_sp`. I also found that the revenue of instant bookable Airbnb home can earn more revenue than non-instant bookable Airbnb across all neighbourhood groups (see below the rightside graph). And the median revenues of high revenue range all come from instant bookable group. We can confirm that instant bookable Airbnb can create more revenue for hosts.
+
+<br>
+<div style="float: left; width: 50%; height: 450px;">
+![](rev_suphost_perform.png){width=500px} 
+</div>
+<div style="float: left; width: 50%; height:450px; padding: 70px 0;">
+![](rev_neighbour_book.png){width=500px} 
+</div>
+
+
+**Conclusion and Recommendations**
+
+In conclusion, I found that host is superhost, performance, instant bookable and neighbourhood group are closely related to price and revenue. Meanwhile, based on my whole analysis, I would recommend that:
+
++ **Being Superhost**
+
+    - Airbnb of superhost is more popular.
+    - The revenue of superhost is higher across different performance levels and each neighbourhood group.
+    
++ **Setting Resonable Price**
+
+    - Most of the booking prices are under $250
+
++ **Making Your Airbnb Home Instant Bookable**
+
+    - Instant bookable price distrbution is higher than non-instant bookable Airbnbs.
+    - In each neighbourhood group, instant bookable Airbnb can get higher median revenus.
+
++ **Host the Home with Reasonable Accommodates**
+
+    - Most of the bookings are less than 5 accommodates.
+    
++ **Making Flexible or Moderate Cancellation Policies**
+
+    - Flexible and moderate cancellation policies have relatively higher median annual revenue.
+    
++ **Choose the Right Neighbourhood Group**
+
+    - If you are still thinking host Airbnb in which area, Downtown, Cascade and Queen Anne will be the good choice, which have higher median price distributions.
+
+Please do not hesitate to contact me if you have questions or would like to discuss the analysis further, it is best to reach me at zhangsiqi@seattleu.edu. I can also provide the Technical Appendix with my complete analysis and the data if you would like more detail.
+
+Best regards,
+
+Siqi Zhang
+
+

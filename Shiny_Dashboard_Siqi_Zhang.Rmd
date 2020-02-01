@@ -1,0 +1,186 @@
+---
+title: "Seattle Airbnb Operation Strategy"
+author: Siqi Zhang
+output: flexdashboard::flex_dashboard
+runtime: shiny
+---
+
+```{r}
+rm(list = ls(all = TRUE))
+```
+
+```{r warning=FALSE, message=FALSE}
+#install.packages("maps")
+#install.packages("shiny")
+
+# load packages
+library(leaflet)
+library(maps)
+library(tidyverse)
+library(DMwR)
+library(microplot)
+library(scales)
+library(shiny)
+```
+
+```{r warning=FALSE}
+# Load data
+sea_airbnb <-read.csv("listings.csv")
+
+# Clean data
+# clean data
+# change column names
+names(sea_airbnb)[9] <- "neighbourhood"
+names(sea_airbnb)[10] <- "neighbourhood_group"
+
+# delete NAs and unused levels
+sea_airbnb <- sea_airbnb[complete.cases(sea_airbnb), ]
+sea_airbnb <- sea_airbnb[!(sea_airbnb$host_response_rate=="N/A"),]
+sea_airbnb$host_response_time <- droplevels(sea_airbnb$host_response_time)
+sea_airbnb$host_is_superhost <- droplevels(sea_airbnb$host_is_superhost)
+sea_airbnb$host_response_rate <- droplevels(sea_airbnb$host_response_rate)
+
+# extract year only from host_since variable
+sea_airbnb$host_since <- strptime(as.character(sea_airbnb$host_since), "%m/%d/%y")
+sea_airbnb$host_since <- substring(sea_airbnb$host_since, 1, 4)
+sea_airbnb$host_since <- as.numeric(as.character(sea_airbnb$host_since))
+
+# convert factor variables to numerical variables
+sea_airbnb$host_response_rate <- as.numeric(sub("%", "", sea_airbnb$host_response_rate,fixed=TRUE))/100
+sea_airbnb$price <- as.numeric(sub("$", "", sea_airbnb$price,fixed=TRUE))
+
+# clean NA in price variable
+sea_airbnb <- sea_airbnb[complete.cases(sea_airbnb), ]
+
+# add weighted review score column
+#sea_airbnb$year_weight <- SoftMax(max(sea_airbnb$host_since)-sea_airbnb$host_since)
+sea_airbnb$year_weight <- SoftMax(sea_airbnb$host_since)
+sea_airbnb$review_weight <- log(sea_airbnb$number_of_reviews)
+sea_airbnb$weighted_score <- sea_airbnb$review_scores_rating*sea_airbnb$year_weight*sea_airbnb$review_weight
+
+# convert numeric weighted review score data to categorical performance
+sea_airbnb$performance[sea_airbnb$weighted_score >= 0 & sea_airbnb$weighted_score <=  20]  = "Bad"
+sea_airbnb$performance[sea_airbnb$weighted_score > 20 & sea_airbnb$weighted_score <=  120]  = "Poor"
+sea_airbnb$performance[sea_airbnb$weighted_score > 120 & sea_airbnb$weighted_score <=  300]  = "Fair"
+sea_airbnb$performance[sea_airbnb$weighted_score > 300 & sea_airbnb$weighted_score <=  400]  = "Good"
+sea_airbnb$performance[sea_airbnb$weighted_score > 400]  = "Excellent"
+sea_airbnb$performance = factor(sea_airbnb$performance, levels=c("Bad", "Poor", "Fair", "Good", "Excellent"))
+
+# change level names for variables
+levels(sea_airbnb$host_is_superhost) <- c("No", "Yes")
+levels(sea_airbnb$instant_bookable) <- c("No", "Yes")
+
+# adjusted columns for analysis use
+sea_airbnb <- select(sea_airbnb, -year_weight, -review_weight)
+
+# mutate annual_revenue column
+# for simplicity, I assume reviews per month will be the days Airbnb booked every month.And I used monthly review numbers*12 to get the yearly booking days.
+sea_airbnb$annual_rev <- sea_airbnb$price*sea_airbnb$reviews_per_month*12
+
+# Reduce the data set to analysis variables
+sea_airbnb <- sea_airbnb[,c("host_is_superhost", "instant_bookable", "performance", "neighbourhood_group", "price", "annual_rev", "reviews_per_month", "longitude", "latitude")]
+names(sea_airbnb)[1] <- "Host_Is_Superhost"
+names(sea_airbnb)[2] <- "Instant_Bookable"
+names(sea_airbnb)[3] <- "Performance"
+names(sea_airbnb)[4] <- "Neighbourhood_Group"
+names(sea_airbnb)[5] <- "Price"
+names(sea_airbnb)[6] <- "Annual_Revenue"
+names(sea_airbnb)[7] <- "Reviews_Per_Month"
+
+x_axis_var <- names(sea_airbnb)[c(1:4, 7)]
+
+
+```
+
+```{r}
+ui <- fluidPage(
+  fluidRow(
+    column(5,
+           div(style="padding:5px;",
+             wellPanel(
+               h4("Seattle Airbnb Distribution"),
+               sliderInput("price_range", "Price Range", min = round(min(sea_airbnb$Price),0),
+                           max = round(max(sea_airbnb$Price), 0), value = c(80, 180), step = 10,
+                           round = 0),
+               leafletOutput("map", height="650px")
+           ))
+    ),
+    column(7,
+           div(style="padding:5px;",
+             wellPanel(
+               h4("How different variables affect price??"),
+               div(style="display: inline-block; width: 45%",
+                   selectInput("boxX", "X-Axis Variable", x_axis_var,
+                               x_axis_var[1])),
+               div(style="display: inline-block; width: 45%",
+                   selectInput("boxColor", "Comparison Group",c("None", x_axis_var),
+                               x_axis_var[2])),
+               plotOutput("boxplot", height="240px")
+           )),
+           div(style="padding:5px;",
+             wellPanel(
+               h4("How different variables affect revenue??"),
+               div(style="display: inline-block; width: 45%",
+                   selectInput("scatterX", "X-Axis Variable",
+                               x_axis_var, x_axis_var[1])),
+               div(style="display: inline-block; width: 45%",
+                   selectInput("scatterColor", "Comparison Group", c("None", x_axis_var),
+                               x_axis_var[2])),
+               plotOutput("scatterplot", height="240px")
+           ))
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  
+  live_sa <- reactive({
+    sea_airbnb %>% 
+      filter(Price >= input$price_range[1],
+            Price <= input$price_range[2])
+   })
+
+  output$map <- renderLeaflet({
+    # Use leaflet() here, and only include aspects of the map that
+    # won"t need to change dynamically (at least, not unless the
+    # entire map is being torn down and recreated).
+    leaflet(sea_airbnb) %>%
+      addTiles() %>%
+      fitBounds(~min(longitude), ~min(latitude), ~max(longitude), ~max(latitude))
+  })
+  
+  observe({
+    leafletProxy("map", data = live_sa()) %>%
+      clearShapes() %>%
+      addCircles(lng = ~longitude, lat = ~latitude)
+  })
+  
+  output$boxplot <- renderPlot({
+    p <- ggplot(sea_airbnb, aes_string(x = input$boxX, y = "Price")) + 
+      geom_boxplot()
+    if (input$boxColor != "None")
+      p <- p + aes_string(color=input$boxColor)
+    p <- p + theme_classic()
+    print(p)
+  })
+  
+  output$scatterplot <- renderPlot({
+    p <- ggplot(sea_airbnb, aes_string(x = input$scatterX, y = "Annual_Revenue")) + 
+      geom_violin(alpha = 0.5, color = "gray") +
+      geom_jitter(alpha = 0.5, position = position_jitter(0.1))
+    
+    if (input$scatterColor != "None")
+      p <- p + aes_string(color=input$scatterColor)
+
+    p <- p + theme_classic()
+    
+    print(p)
+
+  })
+}
+
+shinyApp(ui, server)
+
+```
+
+

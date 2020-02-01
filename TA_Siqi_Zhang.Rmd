@@ -1,0 +1,1887 @@
+---
+title: "Final Project: Seattle Airbnb Host Operation Strategy"
+author: "Siqi Zhang"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    number_sections: true
+---
+
+```{r, message = FALSE, warning = FALSE, echo = FALSE}
+# Clean environment of variables and functions
+rm(list = ls(all = TRUE))
+
+# Clear environmet of packages
+if(is.null(sessionInfo()$otherPkgs) == FALSE)lapply(paste("package:", names(sessionInfo()$otherPkgs), sep=""), detach, character.only = TRUE, unload = TRUE)
+```
+
+# Load packages
+```{r message = FALSE, warning = FALSE}
+#install.packages("softmaxreg")
+#install.packages("DMwR")
+#install.packages("esquisse")
+#install.packages("inspectdf")
+#install.packages("DataExplorer")
+
+# Load packages
+library(tidyverse)
+library(ggplot2)
+library(GGally)
+library(stringr)
+library(gridExtra)
+library(scales)
+library(ggthemes)
+library(gghighlight)
+library(janitor)
+library(MultinomialCI)
+library(htmlTable)
+library(formattable)
+library(DMwR)
+library(esquisse)
+library(inspectdf)
+
+# Stop scientific notation
+options(scipen = 999)
+```
+
+# Describe project
+
+Airbnb, Inc. is an online marketplace for arranging or offering lodging, primarily homestays, or tourism experiences. The company does not own any of the real estate listings, nor does it host events; it acts as a broker, receiving commissions from each booking. In this project, I would like to explore Seattle Airbnb Market, and provide some recommendations to Airbnb hosts and person who wants to host home in the future.
+
+I will analyze the Seattle Airbnb Market data and determinging key findings, they are:
+
++ Be a superhost
+
+    - Airbnb of superhost is more popular.
+    - even though the listing price of superhost is little lower than non-superhost, but the revenue of superhost is higher across different performance levels.
+    - For most of the cancellation policy, superhost can earn more median revenue than non-superhost.
+    - Superhost can earn more median revenue per year across each neighbourhood group.
+    
++ Provide resonable price
+
+    - most of the booking prices are under $250
+
++ Make your Airbnb home instant bookable
+
+    - instant bookable price distrbution is higher than non-instant bookable Airbnbs.
+    - In each neighbourhood group, instant bookable Airbnb can get higher median revenus.
+    
++ Host the home with reasonable accommodates
+
+    - most of the bookings are less than 5 accommodates.
+    
++ Response your customer's questions
+
+    - Response rate of most Good and Excellent performance hosts are high.
+    
++ Make flexible or moderate cancellation policies
+
+    - flexible and moderate cancellation policies have relatively higher median annual revenue.
+    
++ choose the right neighbourhood group
+
+    - Downtown, Cascade and Queen Anne have higher median price distributions.
+    
+
+# Read in data and prepare for analysis
+```{r}
+# Load data
+sea_airbnb <-read.csv("listings.csv")
+```
+
+```{r warning=FALSE, echo=TRUE, results = 'hide'}
+# clean data
+# look at the data
+str(sea_airbnb)
+summary(sea_airbnb)
+
+# change column names
+names(sea_airbnb)[9] <- "neighbourhood"
+names(sea_airbnb)[10] <- "neighbourhood_group"
+
+# delete NAs and unused levels
+sea_airbnb <- sea_airbnb[complete.cases(sea_airbnb), ]
+sea_airbnb <- sea_airbnb[!(sea_airbnb$host_response_rate=="N/A"),]
+sea_airbnb$host_response_time <- droplevels(sea_airbnb$host_response_time)
+sea_airbnb$host_is_superhost <- droplevels(sea_airbnb$host_is_superhost)
+sea_airbnb$host_response_rate <- droplevels(sea_airbnb$host_response_rate)
+
+# extract year only from host_since variable
+sea_airbnb$host_since <- strptime(as.character(sea_airbnb$host_since), "%m/%d/%y")
+sea_airbnb$host_since <- substring(sea_airbnb$host_since, 1, 4)
+sea_airbnb$host_since <- as.numeric(as.character(sea_airbnb$host_since))
+
+# convert factor variables to numerical variables
+sea_airbnb$host_response_rate <- as.numeric(sub("%", "", sea_airbnb$host_response_rate,fixed=TRUE))/100
+sea_airbnb$price <- as.numeric(sub("$", "", sea_airbnb$price,fixed=TRUE))
+
+# clean NA in price variable
+sea_airbnb <- sea_airbnb[complete.cases(sea_airbnb), ]
+```
+
++ There are **9040** obeservations and **25** variables before cleaning data.
+
+
+# Base EDA Step 1: Univariate non-graphical analysis
+```{r}
+# look at the data after cleaning
+head(sea_airbnb)
+```
+
++ Data appears tidy and ready for analysis
+
+    - data in each column is of the same variable type
+    - no duplicate columns
+    - each row is an observation of an unique listing
+
+```{r}
+# add weighted review score column
+#sea_airbnb$year_weight <- SoftMax(max(sea_airbnb$host_since)-sea_airbnb$host_since)
+sea_airbnb$year_weight <- SoftMax(sea_airbnb$host_since)
+sea_airbnb$review_weight <- log(sea_airbnb$number_of_reviews)
+sea_airbnb$weighted_score <- sea_airbnb$review_scores_rating*sea_airbnb$year_weight*sea_airbnb$review_weight
+
+# convert numeric weighted review score data to categorical performance
+sea_airbnb$performance[sea_airbnb$weighted_score >= 0 & sea_airbnb$weighted_score <=  20]  = "Bad"
+sea_airbnb$performance[sea_airbnb$weighted_score > 20 & sea_airbnb$weighted_score <=  120]  = "Poor"
+sea_airbnb$performance[sea_airbnb$weighted_score > 120 & sea_airbnb$weighted_score <=  300]  = "Fair"
+sea_airbnb$performance[sea_airbnb$weighted_score > 300 & sea_airbnb$weighted_score <=  400]  = "Good"
+sea_airbnb$performance[sea_airbnb$weighted_score > 400]  = "Excellent"
+sea_airbnb$performance = factor(sea_airbnb$performance, levels=c("Bad", "Poor", "Fair", "Good", "Excellent"))
+
+# change level names for variables
+levels(sea_airbnb$host_is_superhost) <- c("No", "Yes")
+levels(sea_airbnb$instant_bookable) <- c("No", "Yes")
+
+# adjusted columns for analysis use
+sea_airbnb <- select(sea_airbnb, -year_weight, -review_weight)
+
+# look at the data
+summary(sea_airbnb)
+```
+
++ New variables explanation:
+
+    - The number of reviews may be affected by host year. Some Airbnbs have many reviews may because their host year is long, so I use year weighted to reduce the number of reviews affected by year. The longer the host year, the lower weight will be given. Then, the review score will be lower affected by host years.
+    - The review score is affected by number of reviews, so I calculated the logarithm value for number of reviews as review weight to avoid extreme high review scores. 
+    - Then I got the weighted score of reviews.
+
++ Data observations
+
+    - Many hosts provide several airbnb listings.
+    - Most of the hosts response within an hour.
+    - The host response rate looks unsymmetric.
+    - More than half of the hosts are superhost.
+    - Host total listings look unsymmetric.
+    - Most of the property types are apartment and house.
+    - Most of the room types are entire home/apt and private room.
+    - Accommodates look unsymmetric.
+    - Bathrooms, bedrooms, and beds look unsymmetric.
+    - Price look unsymmetric.
+    - Number of reviews look unsymmetric.
+    - Review scores rating look unsymmetric.
+    - More than half of the airbnbs are instant bookable.
+    - Reviews per month look unsymmetric.
+    - Weighted score looks unsymmetric.
+    
++ Questions on data
+
+    - Which neighbourhood that Airbnb located has the highest price?
+    - Which property type of Airbnb has the highest price?
+    - What factors have affect on price?
+    - What factors have affect on weighted review scores?
+    - Which property type is most popular?
+    - What are the features of Airbnb with high review scores?
+
+```{r}
+# Examine data structure after cleaning
+str(sea_airbnb)
+```
+
++ 6301 observations of 27 variables
++ 9 integer and 8 numeric variables
++ 10 factor variables
+
+# Base EDA Step 2: Univariate graphical analysis
+
+Now, I will explore some important variable individually.
+
+## Categorical/Factor variables
+
+I selected host_response_time, host_is_superhost, neighbourhood, neighbourhood_group, zipcode, property_type, room_type, instant_bookable, cancellation_policy, and performance to examine individually.
+
+### host_response_time and host_is_superhost
+```{r}
+grid.arrange(
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = host_response_time)) +
+    geom_bar(),
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = host_is_superhost)) +
+    geom_bar(),
+  
+  ncol = 1
+
+)
+```
+
+**Comments**
+
+    - Most of the hosts response within an hour.
+    - Superhost is a little bit more than non-superhost.
+    
+### neighbourhood and neighbourhood_group
+```{r}
+grid.arrange(
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = neighbourhood)) +
+    geom_bar() +
+    theme(axis.text.x = element_text(size = 5, angle = 90)),
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = neighbourhood_group)) +
+    geom_bar() +
+    theme(axis.text.x = element_text(size = 8, angle = 20)),
+  
+  ncol = 1
+  
+)
+```
+
+**Comments**
+
+    - For neighbourhood, Belltown Broadway have the most number of Airbnbs.
+    - For grouped neighbourhood, Downtown has the most number of Airbnbs (besides Other neighbourhoods).
+
+### zipcode
+```{r}
+ggplot(data = sea_airbnb, mapping = aes(x = zipcode)) +
+  geom_bar() +
+  theme(axis.text.x = element_text(size = 5, angle = 30))
+```
+
+**Comments**
+
+    - 98101, 98103, and 98122 have the most number of Airbnbs
+
+### property_type and room_type
+```{r}
+grid.arrange(
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = property_type)) +
+    geom_bar() +
+    theme(axis.text.x = element_text(size = 5, angle = 30)),
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = room_type)) +
+    geom_bar(),
+  
+  ncol = 1
+  
+)
+```
+
+**Comments**
+
+    - Most of the Airbnb property types in Seattle are apartment and house.
+    - Most of the Airbnb room type in Seattle is entire home/apt.
+
+
+### instant_bookable and cancellation_policy
+```{r}
+grid.arrange(
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = instant_bookable)) +
+    geom_bar(),
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = cancellation_policy)) +
+    geom_bar() +
+    theme(axis.text.x = element_text(size = 10, angle = 10)),
+  
+  ncol = 1
+  
+)
+```
+
+**Comments**
+
+    - The instant bookable Airbnb is more than non-instant bookable Airbnb.
+    - Most of the Airbnbs have flexible, moderate or strict 14 with grace period cancellation policy.
+
+### performance
+```{r}
+ggplot(data = sea_airbnb, mapping = aes(x = performance)) +
+    geom_bar()
+```
+
+**Comments**
+
++ Performance variable is an overall ranking based on review numbers, host years, and review scores (i.e: weighted score).
+
++ We can find that nearly half of the Airbnb in Seattle don't have a very good performance.
+
+    - Even though it seems that some of the Airbnbs have high review scores, but it might because there are only a few of number of reviews which make these reviews less convincing.
+    - The Airbnb of good and excellent performance must have many high score reviews no matter the years of host since.
+
+
+## Quantitative variables
+
+I will examine on: 
+    
+    - host_total_listings_count
+    - host_response_rate
+    - accommodates
+    - bedrooms
+    - price
+    - number_of_reviews
+    - reviews_per_month
+    - weighted_score
+
+```{r message=FALSE}
+grid.arrange(
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = host_total_listings_count)) +
+    geom_histogram(),
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = 1, y = host_total_listings_count)) +
+    geom_boxplot() +
+    coord_flip(),
+  
+  ncol = 1
+
+)
+```
+
+**Comments**
+
++ Most of the Airbnb hosts have only a few listings
+
+
+### host_response_rate
+```{r message = FALSE}
+grid.arrange(
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = host_response_rate)) +
+    geom_histogram(),
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = 1, y = host_response_rate)) +
+    geom_boxplot() +
+    coord_flip(),
+  
+  ncol = 1
+
+)
+```
+
+**Comments**
+
++ The distribution of host_response_rate is skewed
+
+    - Median would be better than mean.
+    - Most of the hosts have more than 85% response rate.
+    - There are some outliers less than 1.
+    - The outliers may affect the review socres, so I cannot remove them.
+
+### accommodates
+```{r}
+grid.arrange(
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = accommodates)) +
+    geom_bar(),
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = 1, y = accommodates)) +
+    geom_boxplot() +
+    coord_flip(),
+  
+  ncol = 1
+  
+)
+```
+
+**Comments**
+
++ Confirm the accommodates is a skewed distribution
+
+    - Median would be better than mean.
+    - Most of the accommodates are under 8.
+    - Most of the accommodates are cluttered around 5.
+    
+
+### bedrooms
+```{r}
+grid.arrange(
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = bedrooms)) +
+    geom_bar(),
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = 1, y = bedrooms)) +
+    geom_boxplot() +
+    coord_flip(),
+  
+  ncol = 1
+  
+)
+```
+
+**Comments**
+
++ Confirms the bedrooms variable is a skewed distribution
+
+    - Median would be better than mean.
+    - Most of the bedrooms number is under 3.
+    - There are five outliers, and the maximum number of bedrooms is 8.
+    - One bedroom is most common.
+
+### price
+```{r}
+grid.arrange(
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = price)) +
+    geom_bar(),
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = 1, y = price)) +
+    geom_boxplot() +
+    coord_flip(),
+  
+  ncol = 1
+  
+)
+```
+
+**Comments**
+
++ The distribution is unsymmetric
+
+    - Median would be better than mean.
+    - Most of the Airbnb room prices are less than 250 dollars per night.
+    - There are several outliers, but they are important for my reasearch questions so I won't remove them.
+    
+### number_of_reviews
+```{r}
+grid.arrange(
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = number_of_reviews)) +
+    geom_bar(),
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = 1, y = number_of_reviews)) +
+    geom_boxplot() +
+    coord_flip(),
+  
+  ncol = 1
+  
+)
+```
+
+
+### reviews_per_month
+```{r}
+grid.arrange(
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = reviews_per_month)) +
+    geom_bar(),
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = 1, y = reviews_per_month)) +
+    geom_boxplot() +
+    coord_flip(),
+  
+  ncol = 1
+  
+)
+```
+
+**Comments**
+
++ The distribution is unsymmetric
+
+    - Median would be better than mean.
+    - Most of the monthly reviews are under 5.
+    
+
+### review_scores_rating
+```{r}
+grid.arrange(
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = review_scores_rating)) +
+    geom_bar(),
+  
+  ggplot(data = sea_airbnb, mapping = aes(x = 1, y = review_scores_rating)) +
+    geom_boxplot() +
+    coord_flip(),
+  
+  ncol = 1
+  
+)
+```
+
+**Comments**
+
++ Confirms the review scores rating is skewed
+
+    - Median would be better than mean.
+    - Most of the review scores is more than 90.
+    - The outliers are on the left side, and the minimum review score is 20.
+
+**Questions**
+
++ Do these scores objectively reflect the rating based on different number of reviews?
+
+    - Take a look at the weighted review scores across number of reviews.
+
+
+# Base EDA Step 3: Multi-variate Non-graphical Analysis
+## Quantitative Only
+```{r}
+# Correlation table
+sea_airbnb %>%
+  select_if(is.numeric) %>%
+  select(-id, -host_id, -host_since, -latitude, -longitude) %>%
+  cor() %>%
+  round(2)
+```
+
+**Comments**
+
++ host_response_rate has some correlation with reviews_per_month, review_scores_rating, and weighted_score.
++ host_total_listings_count is positive correlated with price, and negative correlated with weighted_score.
++ accommodates has positive correlation with price.
++ number of reviews has some negative correlations with price.
+
+    - infer that Airbnb with lower price is more popular.
+
++ weighted_score has some negative correlations with price.
+
+    - infer that with the price become higher, people may be more strict to the experience in Airbnb. 
+
+**Questions**
+
++ Why price and host_total_listings_count are apparently positive correlated? Is this because most of the listings are located in some specific neighbourhoods?
++ Why weighted_score is negative correlated with price?
++ Bedrooms and accommodates are sightly negative correlated with each other, does that mean people prefer less bedrooms and less accommodates Airbnb?
++ Is there any other factors affect price and weighted_score?
+
+
+## Categorical Only
+
++ For categorical data, I'll take a look at the relationships across different categorical variables:
+
+    - host_response_time
+    - host_is_superhost
+    - neighbourhood_group
+    - property_type
+    - room_type
+    - instant_bookable
+    - cancellation_policy
+    - performance
+
+### host_response_time and host_is_superhost
+```{r}
+sea_airbnb %>%
+  tabyl(host_response_time, host_is_superhost) %>%
+  adorn_totals(where = c("row", "col")) %>%
+  adorn_percentages(denominator = "col") %>%
+  adorn_rounding(2)
+```
+
+**Comments**
+
++ Superhost and non-superhost have the similar distributions of percentages on host response time.
+
++ Indicates we can add one more quantitative variables (i.e: price) to take a further look
+
+    - price may different in same area between superhost and non-superhost 
+
+### host_is_superhost and neighbourhood_group
+```{r}
+sea_airbnb %>%
+  tabyl(host_is_superhost, neighbourhood_group) %>%
+  adorn_totals(where = c("row", "col")) %>%
+  adorn_percentages(denominator = "all") %>%
+  adorn_rounding(2)
+```
+
+**Comments**
+
++ Most of the superhost are located in Capitol Hill, Cental Area, Downtown Seattle, and Queen Anne
+
+### host_is_superhost and instant_bookable
+```{r}
+sea_airbnb %>%
+  tabyl(instant_bookable, host_is_superhost) %>%
+  adorn_totals(where = c("row", "col")) %>%
+  adorn_percentages(denominator = "all") %>%
+  adorn_rounding(2)
+```
+
+**Comments**
+
++ For superhost, there is no apparent proportional difference between instant bookable and non-instant bookable.
+
+### host_is_superhost and cancellation_policy
+```{r}
+sea_airbnb %>%
+  tabyl(host_is_superhost, cancellation_policy) %>%
+  adorn_totals(where = c("row", "col")) %>%
+  adorn_percentages(denominator = "all") %>%
+  adorn_rounding(3)
+```
+
+**Comments**
+
++ Most of the superhost do not have very strict cancellation policy.
+
+    - Cancellation policy may affect the review scores.
+    - Infer that superhost may have a higher review score.
+    
++ Need to combine quantitative variables to take a look
+
+
+### neighbourhood_group and room_type
+```{r}
+sea_airbnb %>%
+  tabyl(neighbourhood_group, room_type) %>%
+  adorn_totals(where = c("row", "col")) %>%
+  adorn_percentages(denominator = "all") %>%
+  adorn_rounding(3)
+```
+
+
+### neighbourhood_group and instant_bookable
+```{r}
+sea_airbnb %>%
+  tabyl(neighbourhood_group, instant_bookable) %>%
+  adorn_totals(where = c("row", "col")) %>%
+  adorn_percentages(denominator = "all") %>%
+  adorn_rounding(3)
+```
+
+**Comments**
+
++ Beacon Hill, Capitol Hill, Cascade, Central Area, Downtown, and Queen Anne have more instant bookable Airbnb, especially for Downtown Seattle.
+
+**Questions**
+
++ Does instant bookable Airbnb have a higher booking price?
+
+
+### instant_bookable and cancellation_policy
+```{r}
+sea_airbnb %>%
+  tabyl(cancellation_policy, instant_bookable) %>%
+  adorn_totals(where = c("row", "col")) %>%
+  adorn_percentages(denominator = "all") %>%
+  adorn_rounding(3)
+```
+
+### host_is_superhost and performance
+```{r}
+sea_airbnb %>%
+  tabyl(performance, host_is_superhost) %>%
+  adorn_totals(where = c("row", "col"))
+```
+
+**Comments**
+
++ There is no apparent difference for bad, poor and fair group across by host_is_superhost.
+
++ But superhost performs much better in good and excellent group
+
+**Questons**
+
++ What is the price distribution of host_is_superhost across performance?
+
+### instant_bookable and performance
+```{r}
+sea_airbnb %>%
+  tabyl(instant_bookable, performance) %>%
+  adorn_totals(where = c("row", "col"))
+```
+
+**Comments**
+
++ Instant bookable Airbnbs have a better overall performance.
+
+**Questons**
+
++ What is the price distribution of instant_bookable across performance?
+
+
+# Base EDA Step 4: Multi-variate graphical
+## Step 4.1: Categorical
+
++ Bar graphs with multiple categorical variables
+```{r}
+# host_response_time across host_is_superhost
+sea_airbnb %>%
+  ggplot(mapping = aes(x = host_response_time, fill = host_is_superhost)) +
+  geom_bar(position = "dodge")
+```
+
+```{r}
+# instant_bookable across host_is_superhost
+sea_airbnb %>%
+  ggplot(mapping = aes(x = instant_bookable, fill = host_is_superhost)) +
+  geom_bar(position = "dodge")
+```
+
+
+**Comments**
+
++ host_response_time and instant_bookable is closely balanced by host is superhost.
+
+
+```{r}
+# cancellation_policy across host_is_superhost
+sea_airbnb %>%
+  ggplot(mapping = aes(x = cancellation_policy, fill = host_is_superhost)) +
+  geom_bar(position = "dodge") +
+  theme(axis.text.x = element_text(size = 10, angle = 15))
+```
+
+**Comments**
+
++ There appears to be a difference in host_is_superhost across cancellation_policy
+
+**Questions**
+
++ Will cancellation policies affect the price?
+
++ Will cancellation policies affect the weighted_score?
+
+
+```{r}
+# neighbourhood_group across room_type
+sea_airbnb %>%
+  ggplot(mapping = aes(x = neighbourhood_group, fill = room_type)) +
+  geom_bar(position = "dodge") +
+  theme(axis.text.x = element_text(size = 5, angle = 15))
+```
+
+```{r}
+# neighbourhood_group across instant_bookable
+sea_airbnb %>%
+  ggplot(mapping = aes(x = neighbourhood_group, fill = instant_bookable)) +
+  geom_bar(position = "dodge") +
+  theme(axis.text.x = element_text(size = 5, angle = 15))
+```
+
+```{r}
+# neighbourhood_group across cancellation_policy
+sea_airbnb %>%
+  ggplot(mapping = aes(x = neighbourhood_group, fill = cancellation_policy)) +
+  geom_bar(position = "dodge") +
+  theme(axis.text.x = element_text(size = 5, angle = 15))
+```
+
+**Comments**
+
++ There appears to be a difference in neighbourhood_group across room_type, instant_bookable, and cancellation_policy.
+
+**Questions**
+
++ Is there any price differences between instant bookable Airbnb and non-instant bookable Airbnb?
+
+
+```{r}
+# cancellation_policy across instant_bookable
+sea_airbnb %>%
+  ggplot(mapping = aes(x = cancellation_policy, fill = instant_bookable)) +
+  geom_bar(position = "dodge") +
+  theme(axis.text.x = element_text(size = 10, angle = 15))
+```  
+
+**Comments**
+
++ Instant_bookable is closely balanced by cancellation_policy. 
+
+```{r}
+# performance across host_is_superhost
+sea_airbnb %>%
+  ggplot(mapping = aes(x = performance, fill = host_is_superhost)) +
+  geom_bar(position = "dodge")
+```
+
+**Comments**
+
++ Confirms that superhost has a better performance than non-superhost
+
+```{r}
+# performance across property_type
+sea_airbnb %>%
+  ggplot(mapping = aes(x = property_type, fill = performance)) +
+  geom_bar(position = "dodge") +
+  theme(axis.text.x = element_text(size = 5, angle = 15))
+```
+
+**Comments**
+
++ appears to be a difference in performance across property_type
+
++ need to take a closer look
+
+**Comments**
+
++ Which property type has a better performance?
+
+
+```{r}
+# performance across instant_bookable
+sea_airbnb %>%
+  ggplot(mapping = aes(x = performance, fill = instant_bookable)) +
+  geom_bar(position = "dodge")
+```
+
+**Comments**
+
++ Instant_bookable Airbnbs have better performance in fair, good, and excellent groups.
+
+```{r}
+# performance across cancellation_policy
+sea_airbnb %>%
+  ggplot(mapping = aes(x = cancellation_policy, fill = performance)) +
+  geom_bar(position = "dodge") +
+  theme(axis.text.x = element_text(size = 10, angle = 15))
+```
+
+**Comments**
+
++ Relatively flexible or moderate cancellation policies have more possibility to get a better performance.
+
+    - take a further look
+
+### Categorical - perforamce/cancellation policy
+```{r}
+# more detail on performance and property_type
+grid.arrange(
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = property_type, fill = performance)) +
+    geom_bar(position = "dodge") +
+    coord_flip() +
+    theme(axis.text.y = element_text(size = 5)),
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = property_type, fill = performance)) +
+    geom_bar(position = "fill") +
+    coord_flip() +
+    theme(axis.text.y = element_text(size = 5)),
+  
+  ncol = 1
+  
+)
+```
+
+**Comments**
+
++ Farm stay and Boutique hotel have the best performance overall.
+
++ Townhouse, Tinyhouse, Loft, House, Guesthouse, Guest suite, Cottage, Condominium, Boat, and Apartment have the similar performance distributions.
+
+
+```{r}
+# more detail on performance and cancellation policy
+grid.arrange(
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = cancellation_policy, fill = performance)) +
+    geom_bar(position = "dodge") +
+    coord_flip(),
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = cancellation_policy, fill = performance)) +
+    geom_bar(position = "fill") +
+    coord_flip(),
+  
+  ncol = 1
+  
+)
+```
+
+**Comments**
+
++ Confirms that flexible, moderate and strict_14_with_grace_period have similar distributions.
+
+
+## Step 4.2: Quantitative
+
+In this part, I will examine the relationship between different quantitative variables:
+
+    - host_response_rate
+    - accommodates
+    - bedrooms
+    - reviews_per_month
+    - number_of_reviews
+    - price
+    - weighted_score
+
+```{r warning=FALSE}
+# Distribution of numeric variables
+# correlation between price and other variables
+sea_airbnb %>%
+  inspect_cor(with_col = "price") %>%
+  show_plot()
+```
+
+**Comments**
+
++ Price has apparent positive correlation with host_total_listings_count, accommodates, bedrooms, beds,  and bathrooms.
+
++ Price has apparent negative correlation with reviews_per_month, number_of_reviews, weighted_score, and review_scores_rating.
+
+**Questions**
+
++ Price is negative related with number_of_reviews and reviews_per_month. Does that imply that low price Airbnbs are more welcomed by people?
+
+
+```{r warning=FALSE}
+# correlation between weighted score and other variables
+sea_airbnb %>%
+  inspect_cor(with_col = "weighted_score") %>%
+  show_plot()
+```
+
+**Comments**
+
++ weighted_score has apparent positive correlation with host_since, reviews_per_month, number_of_reviews, and review_scores_rating.
+
++ weighted_score has apparent negative correlation with host_total_listings_count, price, and minimum_nights.
+
+```{r}
+# host_response_rate across weighted score
+sea_airbnb %>%
+  ggplot(mapping = aes(x = host_response_rate, y = weighted_score)) +
+  geom_point()
+```
+
+**Comments**
+
++ Some high response rates have low weighted scores.
+
+    - might because few number of reviews or low review scores
+
++ Didn't find apparent linear relationship between weighted_score and host_response_rate
+
+
+```{r}
+# host_response_rate across price
+sea_airbnb %>%
+  ggplot(mapping = aes(x = host_response_rate, y = price)) +
+  geom_point()
+```
+
+**Comments**
+
++ Most of the points are clustered on the price lower than $250 and response rate is higher than 0.875.
+
++ People may prefer a lower price Airbnb.
+
+
+```{r}
+# price across accommodates
+sea_airbnb %>%
+ggplot(mapping = aes(x = accommodates, y = price))+geom_violin(alpha=0.5, color="gray")+geom_jitter(alpha=0.5, aes(color=accommodates), position = position_jitter(width = 0.1))
+```
+
+**Comments**
+
++ Most of the data points are clustered below $500 and less than 10 accommodates.
+
+
+```{r}
+# price across bedrooms
+sea_airbnb %>%
+ggplot(mapping = aes(x = bedrooms, y = price))+geom_violin(alpha=0.5, color="gray")+geom_jitter(alpha=0.5, aes(color=bedrooms), position = position_jitter(width = 0.1))
+```
+
+**Comments**
+
++ For each numbers of bedrooms, there are different prices from low to high.
++ In general, the more bedrooms, the price tends to be higher.
+
+
+```{r}
+# host_total_listings_count across price
+sea_airbnb %>%
+  ggplot(mapping = aes(x = host_total_listings_count, y = price)) +
+  geom_point()
+```
+
+**Comments**
+
++ Most of the data points are clustered below $500 and 250 total listing counts.
+
++ Didn't find apparent positive distributions between total listings and price. 
+
+
+```{r}
+# reviews_per_month across price
+sea_airbnb %>%
+  ggplot(mapping = aes(x = reviews_per_month, y = price)) +
+  geom_point()
+```
+
+**Comments**
+
++ Highest number of reviews per month are showed on price below $250.
+
+    - Confirms that people prefer a relatively low price
+
+
+```{r}
+# price across weighted_score
+sea_airbnb %>%
+  ggplot(mapping = aes(x = weighted_score, y = price)) +
+  geom_point()
+```
+
+**Comments**
+
++ Nearly all high weighted score are clustered on price below $250.
+
++ Only a few high price Airbnbs have high weighted score.
+
+    - Might because the higher price the higher expectations people will have.
+    
+
+```{r}
+# number_of_reviews across weighted_score
+sea_airbnb %>%
+  ggplot(mapping = aes(x = number_of_reviews, y = weighted_score)) +
+  geom_point()
+```
+
+**Comments**
+
++ Confirms that more number of reviews will have more chance to get a higher weighted_score
+
+```{r}
+# reviews_per_month across accommodates
+sea_airbnb %>%
+ggplot(mapping = aes(x = reviews_per_month, y = accommodates))+geom_violin(alpha=0.5, color="gray")+geom_jitter(alpha=0.5, aes(color=accommodates), position = position_jitter(width = 0.1))
+```
+
+**Comments**
+
++ Comfirms that less accommodates (i.e.: less than 5) are more popular.
+
+
+```{r}
+# reveiws_per_month across bedrooms
+sea_airbnb %>%
+ggplot(mapping = aes(x = reviews_per_month, y = bedrooms))+geom_violin(alpha=0.5, color="gray")+geom_jitter(alpha=0.5, aes(color=bedrooms), position = position_jitter(width = 0.1))
+```
+
+**Comments**
+
++ Confirms that less bedrooms (i.e.: less than 3) are more popular.
+
+
+## Step 4.3: Categorical and quantitative
+```{r message = FALSE}
+sea_airbnb %>%
+  ggpairs(columns = c(5,7,15,16,20,24,25,27))
+```
+
+**Comments**
+
++ host_is_superhost balanced looking both directions on correlation graph. 
+
++ instant_bookable balanced looking both directions on correlation graph.
+
+**Questions**
+
++ Look more closely at:
+
+    - host_is_superhost/price
+    - neighbourhood_group/price
+    - property_type/price
+    - performance/price
+    - cancellation_policy/price
+    - instant_bookable/price
+    - neighbourhood_group/reviews_per_month
+    - property_type/reviews_per_month
+    - instant_bookable/reviews_per_month
+    - cancellation_policy/reviews_per_month
+    - host_is_superhost/reviews_per_month
+    - host_is_superhost/weighted_score
+    - host_response_rate/performance
+    
+### host_is_superhost/price and neighbourhood_group/price
+```{r}
+grid.arrange(
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = host_is_superhost, y = price)) +
+    geom_boxplot(),
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = neighbourhood_group, y = price)) +
+    geom_boxplot() +
+    theme(axis.text.x = element_text(size = 7, angle = 15)),
+  
+  ncol = 1
+)
+```
+
+**Comments**
+
++ host_is_superhost vs price
+
+    - superhost price distribution is little lower than non-superhost.
+
++ neighbourhood_group vs price
+
+    - Downtown and Queen Anne have higher price distributions.
+    - Beacon Hill, Delridge, Northgate and University District have relatively low price distributions.
+
+### property_type/price and performance/price
+```{r}
+grid.arrange(
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = property_type, y = price)) +
+    geom_boxplot() +
+    theme(axis.text.x = element_text(size = 5, angle = 15)),
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = performance, y = price)) +
+    geom_boxplot(),
+  
+  ncol = 1
+)
+```
+
+**Comments**
+
++ property_type vs price
+
+    - Boutique hotel has the highest price distribution.
+    - Farm stay and Tree house have lowest price distribution.
+
++ performance vs price
+
+    - Good and Excellent performance have relatively low price distributions.
+    - Bad and Poor performance have relatively high price distributions.
+        - Further confrims that people prefer relatively low price Airbnb.
+
+
+### cancellation_policy/price and instant_bookable/price
+```{r}
+grid.arrange(
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = cancellation_policy, y = price)) +
+    geom_boxplot() +
+    theme(axis.text.x = element_text(size = 9, angle = 10)),
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = instant_bookable, y = price)) +
+    geom_boxplot(),
+  
+  ncol = 1
+)
+```
+
+**Comments**
+
++ cancellation_policy vs price
+
+    - super_strict_60 has the highest price distribution.
+    - flexible and moderate have the relatively low price distribution.
+ 
++ instant_bookable vs price
+
+    - instant bookable price distrbution is a little bit higher than non-instant bookable Airbnbs.
+   
+**Questions**
+
++ Which cancellation policy is more welcomed?
+
+    - look at the cancellation_policy across reviews_per_month.
+
+
+### cancellation_policy/reviews_per_month and property_type/reviews_per_month   
+```{r}
+grid.arrange(
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = cancellation_policy, y = reviews_per_month)) +
+    geom_boxplot() +
+    theme(axis.text.x = element_text(size = 9, angle = 10)),
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = property_type, y = reviews_per_month)) +
+    geom_boxplot() +
+    theme(axis.text.x = element_text(size = 5, angle = 15)),
+  
+  ncol = 1
+)
+```
+
+**Comments**
+
++ cancellation_policy vs reviews_per_month
+
+    - Confirms that flexible and moderate cancellation policies are more welcomed.
+
++ property_type vs reviews_per_month
+
+    - farm stay is popular among property_types.
+    - Bed and breakfast and Tent are less popular.
+    
+**Questions**
+
++ How about the revenue across different cancellation policies?
+
++ How about the revenue across different property types?
+
+### instant_bookable/reviews_per_month and neighbourhood_grou/reviews_per_month
+```{r}
+grid.arrange(
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = instant_bookable, y = reviews_per_month)) +
+    geom_boxplot(),
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = neighbourhood_group, y = reviews_per_month)) +
+    geom_boxplot() +
+    theme(axis.text.x = element_text(size = 7, angle = 15)),
+  
+  ncol = 1
+)
+```
+
+**Comments**
+
++ instant_bookable vs reviews_per_month
+
+    - instant bookable Airbnb is more welcomed by people.
+
++ neighbourhood_group vs reviews_per_month
+
+    - Cascade and University District have lowest review number distributions.
+    - Beacon Hill, Capitol Hill, Central Area, Delridge, and Queen Anne have relatively higher monthly review number distributions.
+
+
+### host_is_superhost/reviews_per_month and host_is_superhost/weighted_score
+```{r}
+grid.arrange(
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = host_is_superhost, y = reviews_per_month)) +
+    geom_boxplot(),
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = host_is_superhost, y = weighted_score)) +
+    geom_boxplot(),
+  
+  ncol = 1
+)
+```
+
+**Comments**
+
++ host_is_superhost vs reviews_per_month
+
+    - Airbnb of superhost is more popular.
+
++ host_is_superhost vs weighted_score
+
+    - superhost's weighted score is higher than non-superhost.
+
+
+### host_response_rate across performance 
+```{r}
+sea_airbnb %>%
+  ggplot(mapping = aes(x = performance, y = host_response_rate)) +
+  geom_boxplot()
+```
+    
+**Comments**
+
++ host_response_rate vs performance
+
+    - Response rate of most Good and Excellent performance hosts are high.
+
+
+### annual_revenue/cancellation_policy and annual_revenue/neighbourhood_group
+```{r}
+# mutate annual_revenue column
+# for simplicity, I assume reviews per month will be the days Airbnb booked every month.And I used monthly review numbers*12 to get the yearly booking days.
+sea_airbnb$annual_rev <- sea_airbnb$price*sea_airbnb$reviews_per_month*12
+```
+
+```{r}
+grid.arrange(
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = cancellation_policy, y = annual_rev)) +
+    geom_boxplot() +
+    theme(axis.text.x = element_text(size = 9, angle = 10)),
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = neighbourhood_group, y = annual_rev)) +
+    geom_boxplot() +
+    theme(axis.text.x = element_text(size = 7, angle = 12)),
+  
+  ncol = 1
+)
+```
+
+**Comments**
+
++ cancellation_policy vs annual_revenue
+
+    - flexible, moderate and strict_14_with_grace_period have relatively higher annual revenue distributions.
+    
++ neighbourhood_group vs annual_revenue
+
+    - Capitol Hill, Downtown, and Queen Anne have relatively higher annual revenue distributions.
+
+
+### annual_revenue/host_is_superhost and annual_revenue/instant_bookable
+```{r}
+grid.arrange(
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = host_is_superhost, y = annual_rev)) +
+    geom_boxplot(),
+  
+  sea_airbnb %>%
+    ggplot(mapping = aes(x = instant_bookable, y = annual_rev)) +
+    geom_boxplot(),
+  
+  ncol = 1
+)
+```
+
+**Comments**
+
++ host_is_superhost vs annual_revenue
+
+    - superhost has higher annual revenue distributions.
+    
++ instant_bookable vs annual_revenue
+
+    - instant_bookable has higher annual revenue distributions.
+
+
+### annual_revenue/property_type
+```{r}
+sea_airbnb %>%
+  ggplot(mapping = aes(x = property_type, y = annual_rev)) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(size = 5, angle = 13))
+```
+
+**Comments**
+
++ Apartment and Condominium have similar annual revenue distributions.
+
++ House has more chance to earn a high revenue.
+
++ Even if Farm stay is popular, but the annual revenue is not so high.
+
++ Tree house has the lowest annual revenue.
+
+
+# Detailed EDA - questions raised in Base EDA and other new questions
+
+## What is the annual_revenue distribution of host_is_superhost across performance?
+```{r}
+# annual_rev/host_is_superhost/performance
+sea_airbnb %>%
+  group_by(host_is_superhost, performance) %>%
+  summarise(med_revenue = median(annual_rev)) %>%
+  ggplot(mapping = aes(x = performance, y = med_revenue, color = host_is_superhost, group = host_is_superhost)) +
+  geom_line(aes(color = host_is_superhost)) +
+  geom_point() +
+  labs(x = "Performance", y = "Median Revenue", color = "Host is superhost") +
+  theme_classic() +
+  #scale_color_manual(values = c("#969696", "red"), labels = c("No", "Yes"), guide = guide_legend(reverse = TRUE)) +
+  scale_y_continuous(label = dollar)
+```
+
+**Comments**
+
++ For each performance level, superhost can earn more revenue than non-superhost.
+
+    - would recommend Airbnb host to be the superhost.
+
+
+## What is the distribution of annual_revenue and neighbourhood_group across instant bookable?
+```{r}
+sea_airbnb %>%
+  group_by(neighbourhood_group, instant_bookable) %>%
+  summarise(med_revenue = median(annual_rev)) %>%
+  ggplot(mapping = aes(x = neighbourhood_group, y = med_revenue, color = instant_bookable, group = instant_bookable)) +
+  geom_line(aes(color = instant_bookable)) +
+  geom_point() +
+  coord_flip() +
+  labs(x = "Neighbourhood Group", y = "Median Revenue", color = "Instant Bookable") +
+  theme_classic() +
+  #theme(axis.text.x = element_text(size = 5, angle = 13)) +
+  #scale_color_manual(values = c("#969696", "red"), labels = c("No", "Yes"), guide = guide_legend(reverse = TRUE)) +
+  scale_y_continuous(label = dollar)
+```
+
+**Comments**
+
++ Airbnb in Capitol Hill, Central Area, Magnolia, and Queen Anne can get the highest median revenue.
++ In each neighbourhood group, instant bookable Airbnb can get higher median revenus.
+
+
+## What is the annual_revenue distribution of cancellation_policy across host_is_superhost?
+```{r}
+sea_airbnb %>%
+  group_by(cancellation_policy, host_is_superhost) %>%
+  summarise(med_revenue = median(annual_rev)) %>%
+  ggplot(mapping = aes(x = cancellation_policy, y = med_revenue, color = host_is_superhost, group = host_is_superhost)) +
+  geom_line(aes(color = host_is_superhost)) +
+  geom_point() +
+  coord_flip() +
+  labs(x = "Cancellation Policy", y = "Median Revenue", color = "Host is superhost") +
+  theme_classic() +
+  #scale_color_manual(values = c("#969696", "red"), labels = c("No", "Yes"), guide = guide_legend(reverse = TRUE)) +
+  scale_y_continuous(label = dollar)
+```
+
+**Comments**
+
++ For most of the cancellation policy, superhost can earn more median revenue than non-super host.
+
+
+## What is the distribution of property_type and median_price across host_is_superhost?
+```{r}
+sea_airbnb %>%
+  group_by(property_type, host_is_superhost) %>%
+  summarise(med_price = median(price)) %>%
+  ggplot(mapping = aes(x = property_type, y = med_price, color = host_is_superhost, group = host_is_superhost)) +
+  geom_line(aes(color = host_is_superhost)) +
+  geom_point() +
+  coord_flip() +
+  labs(x = "Property type", y = "Median Price", color = "Host is superhost") +
+  theme_classic() +
+  #scale_color_manual(values = c("#969696", "red"), labels = c("No", "Yes"), guide = guide_legend(reverse = TRUE)) +
+  scale_y_continuous(label = dollar)
+```
+
+**Comments**
+
++ For both superhost and non-superhost, Boutique hotel has the median price. 
+
+
+```{r}
+sea_airbnb %>%
+  group_by(neighbourhood_group, host_is_superhost) %>%
+  summarise(med_revenue = median(annual_rev)) %>%
+  ggplot(mapping = aes(x = neighbourhood_group, y = med_revenue, color = host_is_superhost, group = host_is_superhost)) +
+  geom_line(aes(color = host_is_superhost)) +
+  geom_point() +
+  coord_flip() +
+  labs(x = "Neighbourhood Group", y = "Median Revenue", color = "Host is superhost") +
+  theme_classic() +
+  #scale_color_manual(values = c("#969696", "red"), labels = c("No", "Yes"), guide = guide_legend(reverse = TRUE)) +
+  scale_y_continuous(label = dollar)
+```
+
+**Comments**
+
++ No matter hosts in which area, being a superhost can earn more median revenue per year.
++ For superhosts, they can earn the highest revenue in Queen Anne neighbourhood.
++ For nonsuperhosts, they earn maximum median revenue in Central Area neighbourhood.
+
+## What is the distribution of median_price and neighbourhood_group across property_type?
+```{r}
+# select the top 3 popular property type
+top_3_property_type <- sea_airbnb %>%
+  group_by(property_type) %>%
+  summarise(count_n = n()) %>%
+  arrange(desc(count_n)) %>%
+  slice(1:3)
+
+sea_airbnb_prpt_t3 <- inner_join(sea_airbnb, top_3_property_type, by = "property_type")
+
+sea_airbnb_prpt_t3 %>%
+  group_by(neighbourhood_group, property_type) %>%
+  summarise(med_price = median(price)) %>%
+  ggplot(mapping = aes(x = neighbourhood_group, y = med_price, color = property_type, group = property_type)) +
+  geom_line(aes(color = property_type)) +
+  geom_point() +
+  coord_flip() +
+  labs(x = "Neighbourhood Group", y = "Median Price", color = "Property Type") +
+  theme_classic() +
+  scale_y_continuous(label = dollar)
+```
+
+**Comments**
+
++ Showing all property types will be overwhelming, so I only picked the top 3 popular property type.
++ Apartment has the highest median price in Downtown.
++ Guest suite has the highest median price in Interbay.
++ House has the highest median price in Queen Anne.
++ The median price of all property types are lower than $200.
+
+
+## What is the distribution of median_price and reviews_per_month across instant_bookable 
+```{r}
+sea_airbnb %>%
+  group_by(instant_bookable, reviews_per_month) %>%
+  summarise(med_price = median(price)) %>%
+  ggplot(mapping = aes(x = reviews_per_month, y = med_price, color = instant_bookable)) +
+  geom_point() + 
+  facet_grid(. ~ instant_bookable) +
+  theme_bw() +
+  theme(axis.text.x = element_text(face = "bold", size = 10, angle = 0),
+        legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank()) +
+  labs(x = "Reviews Per Month", y = "Median Price", color = "Instant Bookable") +
+  scale_y_continuous(labels = dollar)
+```
+
+**Comments**
+
++ Instant_bookable Airbnb has more high number of monthly reviews.
+    
+    - It seems that instant bookable Airbnb is more popular.
+
++ Instant_bookable Airbnb has more high price data point.
+
+## What is the distribution of performance and median price across instant_bookable?
+```{r}
+sea_airbnb %>%
+  group_by(performance, instant_bookable) %>%
+  summarise(med_price = median(price)) %>%
+  ggplot(mapping = aes(x = performance, y = med_price, color = instant_bookable, group = instant_bookable)) +
+  geom_line(aes(color = instant_bookable)) +
+  geom_point() +
+  labs(x = "Performance", y = "Median Price", color = "Instant Bookable") +
+  theme_classic() +
+  scale_y_continuous(label = dollar)
+```
+
+**Comments**
+
++ The median prices of Fair, Good and Excellent performance are all lower than $140.
+
+    - implies that people may feel more statisfied with a relatively lower price Airbnb.
+
++ The price of instant bookable across bad performance has the highest median price.
+
+
+# Statistical Analysis
+Two main findings
+
++ Being superhost has the higher revenue than non-superhost.
++ Instant bookable Airbnb can earn more revenue than non-instant bookable Airbnb.
+
+Establish a hypothesis
+
++ Finding 1: Being superhost can increase revenue.
+
+    - Null hypothesis: Being superhost has no affect on revenue.
+    - Alternate hypothesis: Being superhost has affect on revenue.
+
++ Finding 2: Instant bookable can increase revenue.
+
+    - Null hypothesis: Instant bookable has no affect on revenue.
+        
+        - Instant bookable Airbnb in different neighbourhood has no affects on revenue.
+        
+    - Alternate hypothesis: Instant bookable has affect on revenue.
+    
+        - Instant bookable Airbnb in different neighbouthood has affects on revenue.
+    
+Set confidence interval
+
++ Confidence level = 95%
+
+## Test first finding:
+Superhost and Revenue
+
++ Null hypothesis: Being superhost has no affect on revenue.
++ Alternate hypothesis: Being superhost has affect on revenue.
+
+### Visualize host_is_superhost and Annual_Revenue
+```{r}
+sea_airbnb %>%
+  ggplot(mapping = aes(x = host_is_superhost, y = annual_rev)) +
+  geom_boxplot()
+```
+
+According to the boxplot graph, host_is_superhost has some affect on annual revenue.
+
+### t-test
+```{r}
+t.test(sea_airbnb$annual_rev[sea_airbnb$host_is_superhost == "Yes"], sea_airbnb$annual_rev[sea_airbnb$host_is_superhost == "No"], conf.level = 0.95)
+```
+
+My null hypothesis is superhost has no affect on revenue. According to the t-test, p-value is near to zero with the confidence interval of 0.95, which indicates that we can reject the null hypothesis that superhost has no affect on revenue.
+
+### Statistical Visual
+```{r}
+# Median revenue and host_is_superhost
+# 95% CI, get z-value for two tails
+z <- qnorm(0.95)
+
+sea_airbnb %>%
+  group_by(host_is_superhost) %>%
+  summarise(med_revenue = median(annual_rev), sd = sd(annual_rev), n = n(), ci = z * sd/sqrt(n)) %>%
+  ggplot(aes(x = host_is_superhost, y = med_revenue)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_errorbar(aes(ymin = med_revenue - ci, ymax = med_revenue + ci), width = 0.5, position = position_dodge(0.9))
+```
+
+According to the error bars, we can find that the spread of data is not so much based on our confidence interval. To be specific, the lower line of host_is_superhost "Yes" error bar does not overlap with the host_is_superhost "No" error bar, which means the data of host_is_superhost "Yes" is different from the data of host_is_superhost "No". So we can confirm to reject our null hypothsis that superhost has no affect on median revenue.
+
+## Test second finding: Instant_bookable and Revenue
+```{r}
+sea_airbnb %>%
+  group_by(instant_bookable, neighbourhood_group) %>%
+  ggplot(mapping =aes(x = instant_bookable, y = annual_rev, fill = neighbourhood_group)) +
+  geom_boxplot() +
+  labs(x = "Instant bookable", y = "Annual Revenue", fill = "Neighbourhood Group")
+```
+
+According to the boxplot, we can find that for same neighbourhood group of Airbnb, different booking policy can bring different revenues. This may imply that the combination of instant_bookable and neighbourhood_group have affect on revenue.
+
+### Multinomial Analysis
+```{r}
+# make a table of counts to calculate the confidence interval
+A_F_n <- sea_airbnb %>%
+  group_by(instant_bookable, neighbourhood_group) %>%
+  summarise(n = n())
+
+# Calculate confidence intervals using mulitnomialCI
+A_F_n_ci <- multinomialCI(t(A_F_n[ ,3]), 0.05)
+
+# Create a table with proportions
+A_F_tab <- sea_airbnb %>%
+  group_by(instant_bookable, neighbourhood_group) %>%
+  summarise(prop = round(n()/sum(nrow(sea_airbnb)), 3))
+
+# Add the confidence intervals to the table of proportions
+A_F_tab$ci_l <- round(A_F_n_ci[ , 1], 3)
+A_F_tab$ci_u <- round(A_F_n_ci[ , 2], 3)
+
+# Show the table
+formattable(A_F_tab)
+```
+
+### Statistical Visual
+```{r}
+A_F_tab %>%
+  ggplot(aes(x = instant_bookable, y = prop, fill = neighbourhood_group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = round(prop, 2)), vjust = -1.5, color = "black",
+            position = position_dodge(0.9), size = 4) +
+  geom_errorbar(aes(ymin = ci_l, ymax = ci_u),
+                width = 0.4, position = position_dodge(0.9)) +
+  labs(x = "Instant Bookable", y = "Proportion", fill = "Neighbourhood group")
+```
+
+Based on this sample:
+
++ Several proportions are reliably greater than zero
++ Downtown has the most reliably
+
+## Multiple linear regression
+```{r}
+# Logit regression with general linear model
+mod <- glm(annual_rev ~ host_is_superhost + instant_bookable + neighbourhood_group, data = sea_airbnb)
+summary(mod)
+```
+
+```{r}
+# plot residuals to check for patterns
+par(mfrow = c(1, 1))
+plot(sea_airbnb$annual_rev, mod$residuals)
+```
+
+```{r}
+par(mfrow = c(1, 1))
+plot(sea_airbnb$price, mod$residuals)
+```
+
+```{r}
+plot(sea_airbnb$host_is_superhost, mod$residuals)
+```
+
+```{r}
+plot(sea_airbnb$instant_bookable, mod$residuals)
+```
+
+```{r}
+plot(sea_airbnb$neighbourhood_group, mod$residuals)
+```
+
+## Visualization of Multiple Regression
+```{r warning = FALSE, message = FALSE}
+# Pull out the coefficients and confidence interval for table and graph
+coe <- summary(mod)$coefficients
+coe_CI <- as.data.frame(cbind(coe[-1, ], confint(mod)[-1, ]))
+
+# Rename results data frame
+names(coe_CI) <- c("estimate", "se", "t", "pval", "low_CI", "high_CI")
+
+htmlTable(round(coe_CI[order(coe_CI$pval, decreasing = FALSE), ], 1))
+```
+
+```{r}
+g1 <- ggplot(coe_CI, aes(x = estimate, y = reorder(row.names(coe_CI),desc(pval)))) +
+  geom_point(size = 3) +
+  xlim(min(coe_CI$low_CI), max(coe_CI$high_CI)) +
+  ylab("Variable") +
+  xlab("Coefficient") +
+  theme_bw() 
+
+
+g2 <- g1 +
+  geom_segment(aes(yend = reorder(row.names(coe_CI),desc(pval))), 
+               xend = coe_CI$high_CI, color = "Blue") +
+  geom_segment(aes(yend = reorder(row.names(coe_CI),desc(coe_CI$pval))), 
+               xend = coe_CI$low_CI, color = "Blue") +
+   xlab("Coefficient with Confidence Interval")
+
+g3 <- g2 +
+  geom_vline(xintercept = 0, color = "red")
+g3
+```
+
+**Comments**
+
++ host_is_superhostYes, instant_bookableYes, neighbourhood_groupUniversity District, neighbourhood_groupQueen Anne, neighbourhood_groupLake City are statistically far from zero, which indicates they have larger impact on revenue and are more statistically significant.
++ The coefficients of neighbourhood_groupWest Seattle, neighbourhood_groupCascade, neighbourhood_groupMagolia, neighbourhood_groupBeacon Hill and neighbourhood_groupInterbay are statistically close to zero, which indicates that they have little impact on revenue and are less statistically significant.
+
+    - can confirm that superhost has affect on revenue.
+    - can confirm that instant_bookable and some of the neighbourhood group have affect on revenue.
+
+# Summary
+In summary, I would conclude that being the superhost, neighbourhood group, instant bookable have affect on revenue.
+
+    - Revenue is higher for superhost.
+    - Revenue is higher for instant bookable Airbnb.
+    - Revenue is higher in some specific neighbourhood groups.
+
+
+# Create professional quality visual
+## annual_revenue/host_is_superhost/performance
+```{r}
+rev_suphost_perform <- sea_airbnb %>%
+  group_by(host_is_superhost, performance) %>%
+  summarise(med_revenue = median(annual_rev)) %>%
+  ggplot(mapping = aes(x = performance, y = med_revenue, color = host_is_superhost, group = host_is_superhost)) +
+  geom_line(aes(color = host_is_superhost)) +
+  geom_point() +
+  geom_hline(yintercept = 6050, linetype = 2, color = "black") +
+  ggtitle("Being Superhost Can Earn More Revenue Per Year", subtitle = "Median revenue of superhost is higher than non-superhost") +
+  labs(x = "Performance", y = "Median Revenue", color = "Host is superhost") +
+  theme_classic() +
+  theme(plot.title = element_text(face = "bold"),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        legend.position = c(0.85, 0.17)) +
+  scale_color_manual(values = c("#969696", "red"), labels = c("No", "Yes"), guide = guide_legend(reverse = TRUE)) +
+  scale_y_continuous(label = dollar)
+
+# show the graph
+rev_suphost_perform
+```
+
+## annual_revenue/neighbourhood_group/instant bookable
+```{r}
+rev_neighbour_book <- sea_airbnb %>%
+  group_by(neighbourhood_group, instant_bookable) %>%
+  summarise(med_revenue = median(annual_rev)) %>%
+  ggplot(mapping = aes(x = neighbourhood_group, y = med_revenue, color = instant_bookable, group = instant_bookable)) +
+  geom_line(aes(color = instant_bookable)) +
+  geom_point() +
+  ggtitle("Making Your Home Instant Bookable", subtitle = "Revenue of Instant Bookable Airbnb home is higher") +
+  coord_flip() +
+  labs(x = "Neighbourhood Group", y = "Median Revenue", color = "Instant Bookable") +
+  annotate("text", x = 16.5, y = 5150, label = "High revenue range", color = "black", size = 3.5) +
+  geom_hline(yintercept = 6200, linetype = 2, color = "black", alpha = 0.5) +
+  geom_hline(yintercept = 4000, linetype = 2, color = "black", alpha = 0.5) +
+  theme_classic() +
+  theme(plot.title = element_text(face = "bold"),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line.y = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        legend.position = "bottom") +
+  scale_color_manual(values = c("#969696", "red"), labels = c("No", "Yes"), guide = guide_legend(reverse = TRUE)) +
+  scale_y_continuous(label = dollar)
+
+# show the graph
+rev_neighbour_book
+```
+
+## reviews_per_month/price
+```{r}
+sea_airbnb$high_monthly_reviews[sea_airbnb$reviews_per_month >= 10]  = "high"
+sea_airbnb$high_monthly_reviews[sea_airbnb$reviews_per_month < 10] = "low"
+sea_airbnb$high_monthly_reviews = factor(sea_airbnb$high_monthly_reviews, levels=c("low", "high"))
+
+review_price <- sea_airbnb %>%
+  group_by(high_monthly_reviews) %>%
+  ggplot(mapping = aes(x = reviews_per_month, y = price, color = high_monthly_reviews)) +
+  geom_point(alpha = 0.8) +
+  ggtitle("What Price Range Is More Welcomed??", subtitle = "Home price lower than $250") +
+  labs(x = "Reviews Per Month", y = "Price") +
+  geom_hline(yintercept = 250, linetype = 2, color = "black") +
+  #annotate("text", x = 16.5, y = 5150, label = "High revenue range", color = "black", size = 3.5)
+  scale_color_manual(values=c("#999999", "red")) +
+  theme_classic() +
+  theme(plot.title = element_text(face = "bold"),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line.y = element_blank(),
+        legend.position = "none") +
+  scale_y_continuous(label = dollar)
+
+# show the graph
+review_price
+```
+
+## Price/Neighbourhood group
+```{r}
+price_neighbour <- sea_airbnb %>%
+  group_by(neighbourhood_group) %>%
+  summarise(med_price = median(price)) %>%
+  ggplot(mapping = aes(x = neighbourhood_group, y = med_price)) +
+  stat_summary(fun.y=median,geom="line",lwd=0.6,aes(group=1)) +
+  coord_flip() +
+  ggtitle("Which Neighbourhood Groups Have High Home Price??", subtitle = "Downtown, Cascade and Queen Anne have highest median price") +
+  labs(x = "Neighbourhood Group", y = "Median Price") +
+  geom_vline(xintercept = 13, linetype = 2, color = "red", alpha = 0.75) +
+  geom_vline(xintercept = 7, linetype = 2, color = "red", alpha = 0.75) +
+  geom_vline(xintercept = 4, linetype = 2, color = "red", alpha = 0.75) +
+  theme_classic() +
+  theme(plot.title = element_text(face = "bold"),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line.y = element_blank(),
+        legend.position = "none") +
+  scale_y_continuous(label = dollar)
+
+# show the graph
+price_neighbour
+```
+
+# Save visuals for use in other documents
+```{r}
+ggsave(filename = "rev_suphost_perform.png", plot = rev_suphost_perform)
+ggsave(filename = "rev_neighbour_book.png", plot = rev_neighbour_book)
+ggsave(filename = "review_price.png", plot = review_price)
+ggsave(filename = "price_neighbour.png", plot = price_neighbour)
+```
+
+
+
